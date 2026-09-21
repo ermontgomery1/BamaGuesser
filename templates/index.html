@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Real-Time University of Alabama Map</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha384-sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H" crossorigin="anonymous">
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha384-cxOPjt7s7Iz04uaHJceBmS+qpjv2JkIHNVcuOrM+YHwZOmJGBXI00mdUXEq65HTH" crossorigin="anonymous"></script>
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js" integrity="sha384-mZLF4UVrpi/QTWPA7BjNPEnkIfRFn4ZEO3Qt/HFklTJBj/gBOV8G3HcKn4NfQblz" crossorigin="anonymous"></script>
+    <link rel="stylesheet" href="{{ url_for('static', filename='index.css') }}">
+</head>
+<body>
+    <!-- Authentication Modal Overlay -->
+    <div id="auth-overlay">
+        <div class="auth-card">
+            <h2>Join Session</h2>
+            <input type="text" id="user-name-input" placeholder="Your Name" required />
+            <input type="password" id="user-pass-input" placeholder="Room Password" required />
+            <button onclick="submitAuth()">Enter</button>
+            <div id="auth-error"></div>
+        </div>
+    </div>
+
+    {% if is_host %}
+    <div class="host-controls">
+        <button id="toggle-btn" onclick="togglePins()">Hide All Pins</button>
+        <button id="delete-all-pins-btn" onclick="deleteAllPins()">Delete All Pins</button>
+    </div>
+    {% endif %}
+
+    <!-- Timer Widget (Bottom Right) -->
+    <div class="timer-panel">
+        <div id="timer-display" class="timer-display">05:00</div>
+        {% if is_host %}
+        <div class="timer-controls">
+            <input type="number" id="timer-min-input" min="0" max="180" value="5" placeholder="Min"/>
+            <input type="number" id="timer-sec-input" min="0" max="59" value="0" placeholder="Sec"/>
+            <button onclick="setTimerTime()">Set</button>
+            <button id="timer-start-btn" onclick="toggleStartPause()">Start</button>
+            <button onclick="sendTimerAction('reset')">Reset</button>
+        </div>
+        {% endif %}
+    </div>
+
+    <div id="map"></div>
+
+    <script>
+        const socket = io();
+
+        // User authentication state
+        let userName = null;
+        let isAuthenticated = false;
+
+        const clientId = localStorage.getItem('user_client_id') || 'user_' + Math.random().toString(36).substring(2, 11);
+        localStorage.setItem('user_client_id', clientId);
+
+        let globalPinsVisible = true;
+
+        // Initialize map
+        const map = L.map('map').setView([33.2094, -87.5415], 15);
+
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            maxZoom: 19,
+            attribution: '© OpenStreetMap contributors'
+        }).addTo(map);
+
+        const markersGroup = L.layerGroup().addTo(map);
+        const activeMarkers = {};
+
+        // --- AUTHENTICATION LOGIC ---
+        function submitAuth() {
+            const nameVal = document.getElementById('user-name-input').value.trim();
+            const passVal = document.getElementById('user-pass-input').value.trim();
+            const errDiv = document.getElementById('auth-error');
+
+            if (!nameVal || !passVal) {
+                errDiv.innerText = "Please provide both a name and password.";
+                errDiv.style.display = "block";
+                return;
+            }
+
+            socket.emit('authenticate', { name: nameVal, password: passVal });
+        }
+
+        socket.on('auth_result', (response) => {
+            const errDiv = document.getElementById('auth-error');
+            if (response.success) {
+                userName = response.name;
+                isAuthenticated = true;
+                document.getElementById('auth-overlay').style.display = 'none';
+            } else {
+                errDiv.innerText = response.message || "Authentication failed.";
+                errDiv.style.display = "block";
+            }
+        });
+
+        // Enter key submits auth modal
+        document.getElementById('user-pass-input').addEventListener('keyup', (e) => {
+            if (e.key === 'Enter') submitAuth();
+        });
+
+        function isPinVisible(pin) {
+            return globalPinsVisible || pin.clientId === clientId;
+        }
+
+        function addMarkerToMap(pin) {
+            if (activeMarkers[pin.id]) return;
+
+            const marker = L.marker([pin.lat, pin.lng]);
+            
+            if (pin.label) {
+                marker.bindTooltip(`<b>${pin.label}</b>`, {
+                    permanent: true,
+                    direction: 'top',
+                    offset: [0, -10],
+                    className: 'pin-label'
+                });
+            }
+
+            if (pin.clientId === clientId) {
+                marker.on('click', (e) => {
+                    L.DomEvent.stopPropagation(e);
+                    if (confirm(`Delete your pin?`)) {
+                        socket.emit('delete_pin', { id: pin.id, clientId: clientId });
+                    }
+                });
+            }
+
+            activeMarkers[pin.id] = { marker: marker, pin: pin };
+
+            if (isPinVisible(pin)) {
+                markersGroup.addLayer(marker);
+            }
+        }
+
+        function updatePinsVisibility(isVisible) {
+            globalPinsVisible = isVisible;
+
+            for (let id in activeMarkers) {
+                const item = activeMarkers[id];
+                if (isPinVisible(item.pin)) {
+                    if (!markersGroup.hasLayer(item.marker)) {
+                        markersGroup.addLayer(item.marker);
+                    }
+                } else {
+                    if (markersGroup.hasLayer(item.marker)) {
+                        markersGroup.removeLayer(item.marker);
+                    }
+                }
+            }
+
+            const toggleBtn = document.getElementById('toggle-btn');
+            if (toggleBtn) {
+                toggleBtn.innerText = globalPinsVisible ? "Hide All Pins" : "Show All Pins";
+            }
+        }
+
+        // --- TIMER LOGIC ---
+        let currentTimerState = { remaining: 300, running: false, end_time: null };
+        let timerInterval = null;
+
+        function formatTime(seconds) {
+            const mins = Math.floor(seconds / 60);
+            const secs = seconds % 60;
+            return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+        }
+
+        function updateTimerUI() {
+            let displaySecs = currentTimerState.remaining;
+
+            if (currentTimerState.running && currentTimerState.end_time) {
+                const now = Date.now() / 1000;
+                displaySecs = Math.max(0, Math.ceil(currentTimerState.end_time - now));
+            }
+
+            document.getElementById('timer-display').innerText = formatTime(displaySecs);
+
+            const startBtn = document.getElementById('timer-start-btn');
+            if (startBtn) {
+                startBtn.innerText = currentTimerState.running ? "Pause" : "Start";
+            }
+        }
+
+        socket.on('timer_update', (state) => {
+            currentTimerState = state;
+            updateTimerUI();
+
+            if (timerInterval) clearInterval(timerInterval);
+            timerInterval = setInterval(updateTimerUI, 200);
+        });
+
+        function sendTimerAction(action, minutes = null, seconds = null) {
+            socket.emit('control_timer', { action: action, minutes: minutes, seconds: seconds });
+        }
+
+        function setTimerTime() {
+            const mins = parseInt(document.getElementById('timer-min-input').value, 10) || 0;
+            const secs = parseInt(document.getElementById('timer-sec-input').value, 10) || 0;
+            
+            if (mins >= 0 && secs >= 0 && (mins > 0 || secs > 0)) {
+                sendTimerAction('set', mins, secs);
+            }
+        }
+
+        function toggleStartPause() {
+            if (currentTimerState.running) {
+                sendTimerAction('pause');
+            } else {
+                sendTimerAction('start');
+            }
+        }
+
+        // --- PIN SOCKET EVENT HANDLERS ---
+        function clearAllMarkers() {
+            markersGroup.clearLayers();
+            for (let id in activeMarkers) {
+                delete activeMarkers[id];
+            }
+        }
+
+        socket.on('delete_all_pins', (data) => {
+            clearAllMarkers();
+            data.pins.forEach(addMarkerToMap);
+            updatePinsVisibility(data.visible);
+        });
+
+        socket.on('load_pins', (data) => {
+            data.pins.forEach(addMarkerToMap);
+            updatePinsVisibility(data.visible);
+        });
+
+        socket.on('new_pin', (pin) => {
+            addMarkerToMap(pin);
+        });
+
+        socket.on('pins_visibility_changed', (isVisible) => {
+            updatePinsVisibility(isVisible);
+        });
+
+        // Click event on map automatically uses the authenticated user's name
+        map.on('click', (e) => {
+            if (!isAuthenticated || !userName) return;
+
+            const pinData = {
+                id: Date.now() + '-' + Math.random().toString(36).substring(2, 9),
+                lat: e.latlng.lat,
+                lng: e.latlng.lng,
+                label: userName,
+                clientId: clientId
+            };
+
+            socket.emit('add_pin', pinData);
+        });
+
+        function togglePins() {
+            socket.emit('toggle_pins');
+        }
+
+        function deleteAllPins() {
+            socket.emit('delete_all_pins');
+        }
+
+        socket.on('pin_deleted', (data) => {
+            if (activeMarkers[data.id]) {
+                markersGroup.removeLayer(activeMarkers[data.id].marker);
+                delete activeMarkers[data.id];
+            }
+        });
+    </script>
+</body>
+</html>
