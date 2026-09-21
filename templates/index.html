@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Real-Time University of Alabama Map</title>
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha384-sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H" crossorigin="anonymous">
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha384-cxOPjt7s7Iz04uaHJceBmS+qpjv2JkIHNVcuOrM+YHwZOmJGBXI00mdUXEq65HTH" crossorigin="anonymous"></script>
@@ -23,12 +23,13 @@
 
     {% if is_host %}
     <div class="host-controls">
-        <button id="toggle-btn" onclick="togglePins()">Hide All Pins</button>
+        <button id="toggle-btn" onclick="togglePins()">Pins: SHOWN</button>
+        <button id="limit-btn" onclick="toggleOnePinLimit()">1 Pin Limit: OFF</button>
         <button id="delete-all-pins-btn" onclick="deleteAllPins()">Delete All Pins</button>
     </div>
     {% endif %}
 
-    <!-- Timer Widget (Bottom Right) -->
+    <!-- Timer Widget (Bottom Right on Desktop / Bottom Center on Mobile) -->
     <div class="timer-panel">
         <div id="timer-display" class="timer-display">05:00</div>
         {% if is_host %}
@@ -44,228 +45,286 @@
 
     <div id="map"></div>
 
-    <script>
-        const socket = io();
+<script>
+    let token = sessionStorage.getItem('jwt_token');
 
-        // User authentication state
-        let userName = null;
-        let isAuthenticated = false;
+    let userName = null;
+    let isAuthenticated = false;
 
-        const clientId = localStorage.getItem('user_client_id') || 'user_' + Math.random().toString(36).substring(2, 11);
-        localStorage.setItem('user_client_id', clientId);
+    // Initialize Socket.IO instance
+    const socket = io({
+        auth: { token: token },
+        autoConnect: false
+    });
 
-        let globalPinsVisible = true;
+    const clientId = localStorage.getItem('user_client_id') || 'user_' + Math.random().toString(36).substring(2, 11);
+    localStorage.setItem('user_client_id', clientId);
 
-        // Initialize map
-        const map = L.map('map').setView([33.2094, -87.5415], 15);
+    let globalPinsVisible = true;
 
-        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-            maxZoom: 19,
-            attribution: '© OpenStreetMap contributors'
-        }).addTo(map);
+    // Doubled geographic boundaries centered around UA campus
+    const campusBounds = L.latLngBounds(
+        [33.1800, -87.5870], // Southwest coordinate
+        [33.2400, -87.4870]  // Northeast coordinate
+    );
 
-        const markersGroup = L.layerGroup().addTo(map);
-        const activeMarkers = {};
+    // Initialize map with expanded area
+    const map = L.map('map', {
+        tap: true,
+        maxBounds: campusBounds,
+        maxBoundsViscosity: 0.6,       // Set between 0.5 and 0.8 to make edges feel softer/elastic
+        minZoom: 13,                  // Lowered to 13 to allow viewing the larger boundary
+        maxZoom: 19
+    }).fitBounds([
+        [33.1950, -87.5620],           // Keeps default view focused tightly on core campus
+        [33.2250, -87.5120]
+    ]);
 
-        // --- AUTHENTICATION LOGIC ---
-        function submitAuth() {
-            const nameVal = document.getElementById('user-name-input').value.trim();
-            const passVal = document.getElementById('user-pass-input').value.trim();
-            const errDiv = document.getElementById('auth-error');
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        minZoom: 13,
+        maxZoom: 19,
+        bounds: campusBounds,
+        attribution: '© OpenStreetMap contributors'
+    }).addTo(map);
 
-            if (!nameVal || !passVal) {
-                errDiv.innerText = "Please provide both a name and password.";
-                errDiv.style.display = "block";
-                return;
+    const markersGroup = L.layerGroup().addTo(map);
+    const activeMarkers = {};
+
+    // --- AUTHENTICATION EVENT LISTENER (REGISTERED FIRST) ---
+    socket.on('auth_result', (response) => {
+        const errDiv = document.getElementById('auth-error');
+        if (response.success) {
+            userName = response.name;
+            isAuthenticated = true;
+
+            if (response.token) {
+                sessionStorage.setItem('jwt_token', response.token);
+                socket.auth = { token: response.token };
             }
 
-            socket.emit('authenticate', { name: nameVal, password: passVal });
+            document.getElementById('auth-overlay').style.display = 'none';
+        } else {
+            errDiv.innerText = response.message || "Authentication failed.";
+            errDiv.style.display = "block";
+        }
+    });
+
+    // Automatically connect AFTER registering listeners
+    if (token) {
+        socket.connect();
+    }
+
+    // --- AUTHENTICATION LOGIC ---
+    function submitAuth() {
+        const nameVal = document.getElementById('user-name-input').value.trim();
+        const passVal = document.getElementById('user-pass-input').value.trim();
+        const errDiv = document.getElementById('auth-error');
+
+        if (!nameVal || !passVal) {
+            errDiv.innerText = "Please provide both a name and password.";
+            errDiv.style.display = "block";
+            return;
         }
 
-        socket.on('auth_result', (response) => {
-            const errDiv = document.getElementById('auth-error');
-            if (response.success) {
-                userName = response.name;
-                isAuthenticated = true;
-                document.getElementById('auth-overlay').style.display = 'none';
+        if (!socket.connected) {
+            socket.connect();
+        }
+
+        socket.emit('authenticate', { name: nameVal, password: passVal });
+    }
+
+    // Enter key submits auth modal
+    document.getElementById('user-pass-input').addEventListener('keyup', (e) => {
+        if (e.key === 'Enter') submitAuth();
+    });
+
+    function isPinVisible(pin) {
+        return globalPinsVisible || pin.clientId === clientId;
+    }
+
+    function addMarkerToMap(pin) {
+        if (activeMarkers[pin.id]) return;
+
+        const marker = L.marker([pin.lat, pin.lng]);
+        
+        if (pin.label) {
+            marker.bindTooltip(`<b>${pin.label}</b>`, {
+                permanent: true,
+                direction: 'top',
+                offset: [0, -10],
+                className: 'pin-label'
+            });
+        }
+
+        if (pin.clientId === clientId) {
+            marker.on('click', (e) => {
+                L.DomEvent.stopPropagation(e);
+                if (confirm(`Delete your pin?`)) {
+                    socket.emit('delete_pin', { id: pin.id, clientId: clientId });
+                }
+            });
+        }
+
+        activeMarkers[pin.id] = { marker: marker, pin: pin };
+
+        if (isPinVisible(pin)) {
+            markersGroup.addLayer(marker);
+        }
+    }
+
+    function updatePinsVisibility(isVisible) {
+        globalPinsVisible = isVisible;
+
+        for (let id in activeMarkers) {
+            const item = activeMarkers[id];
+            if (isPinVisible(item.pin)) {
+                if (!markersGroup.hasLayer(item.marker)) {
+                    markersGroup.addLayer(item.marker);
+                }
             } else {
-                errDiv.innerText = response.message || "Authentication failed.";
-                errDiv.style.display = "block";
-            }
-        });
-
-        // Enter key submits auth modal
-        document.getElementById('user-pass-input').addEventListener('keyup', (e) => {
-            if (e.key === 'Enter') submitAuth();
-        });
-
-        function isPinVisible(pin) {
-            return globalPinsVisible || pin.clientId === clientId;
-        }
-
-        function addMarkerToMap(pin) {
-            if (activeMarkers[pin.id]) return;
-
-            const marker = L.marker([pin.lat, pin.lng]);
-            
-            if (pin.label) {
-                marker.bindTooltip(`<b>${pin.label}</b>`, {
-                    permanent: true,
-                    direction: 'top',
-                    offset: [0, -10],
-                    className: 'pin-label'
-                });
-            }
-
-            if (pin.clientId === clientId) {
-                marker.on('click', (e) => {
-                    L.DomEvent.stopPropagation(e);
-                    if (confirm(`Delete your pin?`)) {
-                        socket.emit('delete_pin', { id: pin.id, clientId: clientId });
-                    }
-                });
-            }
-
-            activeMarkers[pin.id] = { marker: marker, pin: pin };
-
-            if (isPinVisible(pin)) {
-                markersGroup.addLayer(marker);
-            }
-        }
-
-        function updatePinsVisibility(isVisible) {
-            globalPinsVisible = isVisible;
-
-            for (let id in activeMarkers) {
-                const item = activeMarkers[id];
-                if (isPinVisible(item.pin)) {
-                    if (!markersGroup.hasLayer(item.marker)) {
-                        markersGroup.addLayer(item.marker);
-                    }
-                } else {
-                    if (markersGroup.hasLayer(item.marker)) {
-                        markersGroup.removeLayer(item.marker);
-                    }
+                if (markersGroup.hasLayer(item.marker)) {
+                    markersGroup.removeLayer(item.marker);
                 }
             }
-
-            const toggleBtn = document.getElementById('toggle-btn');
-            if (toggleBtn) {
-                toggleBtn.innerText = globalPinsVisible ? "Hide All Pins" : "Show All Pins";
-            }
         }
 
-        // --- TIMER LOGIC ---
-        let currentTimerState = { remaining: 300, running: false, end_time: null };
-        let timerInterval = null;
+        const toggleBtn = document.getElementById('toggle-btn');
+        if (toggleBtn) {
+            toggleBtn.innerText = globalPinsVisible ? "Pins: SHOWN" : "Pins: HIDDEN";
+        }
+    }
 
-        function formatTime(seconds) {
-            const mins = Math.floor(seconds / 60);
-            const secs = seconds % 60;
-            return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+    // --- TIMER LOGIC ---
+    let currentTimerState = { remaining: 300, running: false, end_time: null };
+    let timerInterval = null;
+
+    function formatTime(seconds) {
+        const mins = Math.floor(seconds / 60);
+        const secs = seconds % 60;
+        return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+    }
+
+    function updateTimerUI() {
+        let displaySecs = currentTimerState.remaining;
+
+        if (currentTimerState.running && currentTimerState.end_time) {
+            const now = Date.now() / 1000;
+            displaySecs = Math.max(0, Math.ceil(currentTimerState.end_time - now));
         }
 
-        function updateTimerUI() {
-            let displaySecs = currentTimerState.remaining;
+        document.getElementById('timer-display').innerText = formatTime(displaySecs);
 
-            if (currentTimerState.running && currentTimerState.end_time) {
-                const now = Date.now() / 1000;
-                displaySecs = Math.max(0, Math.ceil(currentTimerState.end_time - now));
-            }
-
-            document.getElementById('timer-display').innerText = formatTime(displaySecs);
-
-            const startBtn = document.getElementById('timer-start-btn');
-            if (startBtn) {
-                startBtn.innerText = currentTimerState.running ? "Pause" : "Start";
-            }
+        const startBtn = document.getElementById('timer-start-btn');
+        if (startBtn) {
+            startBtn.innerText = currentTimerState.running ? "Pause" : "Start";
         }
+    }
 
-        socket.on('timer_update', (state) => {
-            currentTimerState = state;
-            updateTimerUI();
+    socket.on('timer_update', (state) => {
+        currentTimerState = state;
+        updateTimerUI();
 
-            if (timerInterval) clearInterval(timerInterval);
-            timerInterval = setInterval(updateTimerUI, 200);
-        });
+        if (timerInterval) clearInterval(timerInterval);
+        timerInterval = setInterval(updateTimerUI, 200);
+    });
 
-        function sendTimerAction(action, minutes = null, seconds = null) {
-            socket.emit('control_timer', { action: action, minutes: minutes, seconds: seconds });
+    function sendTimerAction(action, minutes = null, seconds = null) {
+        socket.emit('control_timer', { action: action, minutes: minutes, seconds: seconds });
+    }
+
+    function setTimerTime() {
+        const mins = parseInt(document.getElementById('timer-min-input').value, 10) || 0;
+        const secs = parseInt(document.getElementById('timer-sec-input').value, 10) || 0;
+        
+        if (mins >= 0 && secs >= 0 && (mins > 0 || secs > 0)) {
+            sendTimerAction('set', mins, secs);
         }
+    }
 
-        function setTimerTime() {
-            const mins = parseInt(document.getElementById('timer-min-input').value, 10) || 0;
-            const secs = parseInt(document.getElementById('timer-sec-input').value, 10) || 0;
-            
-            if (mins >= 0 && secs >= 0 && (mins > 0 || secs > 0)) {
-                sendTimerAction('set', mins, secs);
-            }
+    function toggleStartPause() {
+        if (currentTimerState.running) {
+            sendTimerAction('pause');
+        } else {
+            sendTimerAction('start');
         }
+    }
 
-        function toggleStartPause() {
-            if (currentTimerState.running) {
-                sendTimerAction('pause');
-            } else {
-                sendTimerAction('start');
-            }
+    // --- PIN SOCKET EVENT HANDLERS ---
+    function clearAllMarkers() {
+        markersGroup.clearLayers();
+        for (let id in activeMarkers) {
+            delete activeMarkers[id];
         }
+    }
 
-        // --- PIN SOCKET EVENT HANDLERS ---
-        function clearAllMarkers() {
-            markersGroup.clearLayers();
-            for (let id in activeMarkers) {
-                delete activeMarkers[id];
-            }
+    socket.on('delete_all_pins', (data) => {
+        clearAllMarkers();
+        data.pins.forEach(addMarkerToMap);
+        updatePinsVisibility(data.visible);
+    });
+
+    let onePinLimit = false;
+
+    function updateLimitBtnUI(enabled) {
+        onePinLimit = enabled;
+        const limitBtn = document.getElementById('limit-btn');
+        if (limitBtn) {
+            limitBtn.innerText = enabled ? "1 Pin Limit: ON" : "1 Pin Limit: OFF";
         }
+    }
 
-        socket.on('delete_all_pins', (data) => {
-            clearAllMarkers();
-            data.pins.forEach(addMarkerToMap);
-            updatePinsVisibility(data.visible);
-        });
+    socket.on('one_pin_limit_changed', (enabled) => {
+        updateLimitBtnUI(enabled);
+    });
 
-        socket.on('load_pins', (data) => {
-            data.pins.forEach(addMarkerToMap);
-            updatePinsVisibility(data.visible);
-        });
-
-        socket.on('new_pin', (pin) => {
-            addMarkerToMap(pin);
-        });
-
-        socket.on('pins_visibility_changed', (isVisible) => {
-            updatePinsVisibility(isVisible);
-        });
-
-        // Click event on map automatically uses the authenticated user's name
-        map.on('click', (e) => {
-            if (!isAuthenticated || !userName) return;
-
-            const pinData = {
-                id: Date.now() + '-' + Math.random().toString(36).substring(2, 9),
-                lat: e.latlng.lat,
-                lng: e.latlng.lng,
-                label: userName,
-                clientId: clientId
-            };
-
-            socket.emit('add_pin', pinData);
-        });
-
-        function togglePins() {
-            socket.emit('toggle_pins');
+    socket.on('load_pins', (data) => {
+        if (data.one_pin_limit !== undefined) {
+            updateLimitBtnUI(data.one_pin_limit);
         }
+        data.pins.forEach(addMarkerToMap);
+        updatePinsVisibility(data.visible);
+    });
 
-        function deleteAllPins() {
-            socket.emit('delete_all_pins');
+    function toggleOnePinLimit() {
+        socket.emit('toggle_one_pin_limit');
+    }
+
+    socket.on('new_pin', (pin) => {
+        addMarkerToMap(pin);
+    });
+
+    socket.on('pins_visibility_changed', (isVisible) => {
+        updatePinsVisibility(isVisible);
+    });
+
+    map.on('click', (e) => {
+        if (!isAuthenticated || !userName) return;
+
+        const pinData = {
+            id: Date.now() + '-' + Math.random().toString(36).substring(2, 9),
+            lat: e.latlng.lat,
+            lng: e.latlng.lng,
+            label: userName,
+            clientId: clientId
+        };
+
+        socket.emit('add_pin', pinData);
+    });
+
+    function togglePins() {
+        socket.emit('toggle_pins');
+    }
+
+    function deleteAllPins() {
+        socket.emit('delete_all_pins');
+    }
+
+    socket.on('pin_deleted', (data) => {
+        if (activeMarkers[data.id]) {
+            markersGroup.removeLayer(activeMarkers[data.id].marker);
+            delete activeMarkers[data.id];
         }
-
-        socket.on('pin_deleted', (data) => {
-            if (activeMarkers[data.id]) {
-                markersGroup.removeLayer(activeMarkers[data.id].marker);
-                delete activeMarkers[data.id];
-            }
-        });
-    </script>
+    });
+</script>
 </body>
 </html>
