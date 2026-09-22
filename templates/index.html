@@ -46,29 +46,24 @@
     <div id="map"></div>
 
 <script>
+    //Variables BEGIN
     let token = sessionStorage.getItem('jwt_token');
-
     let userName = null;
     let isAuthenticated = false;
-
-    // Initialize Socket.IO instance
+    let currentTimerState = { remaining: 300, running: false, end_time: null };
+    let timerInterval = null;
+    let onePinLimit = false;
+    let globalPinsVisible = true;
     const socket = io({
         auth: { token: token },
         autoConnect: false
     });
-
     const clientId = localStorage.getItem('user_client_id') || 'user_' + Math.random().toString(36).substring(2, 11);
     localStorage.setItem('user_client_id', clientId);
-
-    let globalPinsVisible = true;
-
-    // Doubled geographic boundaries centered around UA campus
     const campusBounds = L.latLngBounds(
         [33.1800, -87.5870], // Southwest coordinate
         [33.2400, -87.4870]  // Northeast coordinate
     );
-
-    // Initialize map with expanded area
     const map = L.map('map', {
         tap: true,
         maxBounds: campusBounds,
@@ -79,47 +74,22 @@
         [33.1950, -87.5620],           // Keeps default view focused tightly on core campus
         [33.2250, -87.5120]
     ]);
-
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
         minZoom: 13,
         maxZoom: 19,
         bounds: campusBounds,
         attribution: '© OpenStreetMap contributors'
     }).addTo(map);
-
     const markersGroup = L.layerGroup().addTo(map);
     const activeMarkers = {};
+    //Variables END
 
-    // --- AUTHENTICATION EVENT LISTENER (REGISTERED FIRST) ---
-    socket.on('auth_result', (response) => {
-        const errDiv = document.getElementById('auth-error');
-        if (response.success) {
-            userName = response.name;
-            isAuthenticated = true;
-
-            if (response.token) {
-                sessionStorage.setItem('jwt_token', response.token);
-                socket.auth = { token: response.token };
-            }
-
-            document.getElementById('auth-overlay').style.display = 'none';
-        } else {
-            errDiv.innerText = response.message || "Authentication failed.";
-            errDiv.style.display = "block";
-        }
-    });
-
-    // Automatically connect AFTER registering listeners
-    if (token) {
-        socket.connect();
-    }
-
-    // --- AUTHENTICATION LOGIC ---
     function submitAuth() {
         const nameVal = document.getElementById('user-name-input').value.trim();
         const passVal = document.getElementById('user-pass-input').value.trim();
         const errDiv = document.getElementById('auth-error');
 
+        //If the new user does not provide both a name and a password
         if (!nameVal || !passVal) {
             errDiv.innerText = "Please provide both a name and password.";
             errDiv.style.display = "block";
@@ -130,16 +100,58 @@
             socket.connect();
         }
 
+        //Hand off information to backend
         socket.emit('authenticate', { name: nameVal, password: passVal });
     }
 
-    // Enter key submits auth modal
-    document.getElementById('user-pass-input').addEventListener('keyup', (e) => {
-        if (e.key === 'Enter') submitAuth();
+    socket.on('auth_result', (response) => {
+        const errDiv = document.getElementById('auth-error');
+        if (response.success) {
+            userName = response.name;
+            isAuthenticated = true;
+
+            if (response.token) {
+                sessionStorage.setItem('jwt_token', response.token); //Saves the unique token to the users browser
+                socket.auth = { token: response.token }; //Updates the authentication credentials stored on the Socket.IO client so they are sent during future connection attempts (reconnections).
+            }
+
+            //Hide the login screen
+            document.getElementById('auth-overlay').style.display = 'none';
+        } else {
+            errDiv.innerText = response.message || "Authentication failed.";
+            errDiv.style.display = "block";
+        }
     });
 
-    function isPinVisible(pin) {
-        return globalPinsVisible || pin.clientId === clientId;
+    socket.on('connect_error', (err) => {
+        // 1. Reset state & remove invalid token
+        sessionStorage.removeItem('jwt_token');
+        socket.auth = {};
+        isAuthenticated = false;
+        userName = null;
+
+        // 2. Re-display the login modal
+        const authOverlay = document.getElementById('auth-overlay');
+        const errDiv = document.getElementById('auth-error');
+
+        if (authOverlay) {
+            // Setting to empty string restores the display mode defined in index.css (e.g. flex)
+            authOverlay.style.display = ''; 
+        }
+
+        // 3. Show error message to user
+        if (errDiv) {
+            errDiv.innerText = "Session expired or invalid login. Please re-enter credentials.";
+            errDiv.style.display = "block";
+        }
+    });
+
+    function updateLimitBtnUI(enabled) {
+        onePinLimit = enabled;
+        const limitBtn = document.getElementById('limit-btn');
+        if (limitBtn) {
+            limitBtn.innerText = enabled ? "1 Pin Limit: ON" : "1 Pin Limit: OFF";
+        }
     }
 
     function addMarkerToMap(pin) {
@@ -172,6 +184,10 @@
         }
     }
 
+    function isPinVisible(pin) {
+        return globalPinsVisible || pin.clientId === clientId;
+    }
+
     function updatePinsVisibility(isVisible) {
         globalPinsVisible = isVisible;
 
@@ -194,9 +210,13 @@
         }
     }
 
-    // --- TIMER LOGIC ---
-    let currentTimerState = { remaining: 300, running: false, end_time: null };
-    let timerInterval = null;
+    socket.on('load_pins', (data) => {
+        if (data.one_pin_limit !== undefined) {
+            updateLimitBtnUI(data.one_pin_limit);
+        }
+        data.pins.forEach(addMarkerToMap);
+        updatePinsVisibility(data.visible);
+    });
 
     function formatTime(seconds) {
         const mins = Math.floor(seconds / 60);
@@ -225,8 +245,15 @@
         updateTimerUI();
 
         if (timerInterval) clearInterval(timerInterval);
-        timerInterval = setInterval(updateTimerUI, 200);
+        if (currentTimerState.running) {
+            timerInterval = setInterval(updateTimerUI, 200);
+        }
     });
+
+    // Automatically connect AFTER registering listeners
+    if (token) {
+        socket.connect();
+    }
 
     function sendTimerAction(action, minutes = null, seconds = null) {
         socket.emit('control_timer', { action: action, minutes: minutes, seconds: seconds });
@@ -263,26 +290,8 @@
         updatePinsVisibility(data.visible);
     });
 
-    let onePinLimit = false;
-
-    function updateLimitBtnUI(enabled) {
-        onePinLimit = enabled;
-        const limitBtn = document.getElementById('limit-btn');
-        if (limitBtn) {
-            limitBtn.innerText = enabled ? "1 Pin Limit: ON" : "1 Pin Limit: OFF";
-        }
-    }
-
     socket.on('one_pin_limit_changed', (enabled) => {
         updateLimitBtnUI(enabled);
-    });
-
-    socket.on('load_pins', (data) => {
-        if (data.one_pin_limit !== undefined) {
-            updateLimitBtnUI(data.one_pin_limit);
-        }
-        data.pins.forEach(addMarkerToMap);
-        updatePinsVisibility(data.visible);
     });
 
     function toggleOnePinLimit() {
@@ -304,7 +313,6 @@
             id: Date.now() + '-' + Math.random().toString(36).substring(2, 9),
             lat: e.latlng.lat,
             lng: e.latlng.lng,
-            label: userName,
             clientId: clientId
         };
 

@@ -1,5 +1,5 @@
 from flask import Flask, render_template, request, session
-from flask_socketio import SocketIO, emit, disconnect
+from flask_socketio import SocketIO, emit, disconnect, join_room
 import socket
 import urllib.request
 import time
@@ -7,20 +7,32 @@ import string
 import secrets
 import jwt
 import datetime
+import re
+from markupsafe import escape
 
+#----------SERVER SETUP BEGIN----------
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'map_secret_key'
+
+# Restrict CORS origins to trusted domains or local network patterns
+def check_origin(origin):
+    if not origin:
+        return False
+    pattern = r'^https?://(localhost|127\.0\.0\.1|10\.\d{1,3}\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3})(:\d+)?$'
+    return bool(re.match(pattern, origin))
+
 socketio = SocketIO(
     app,
-    cors_allowed_origins="*",
+    cors_allowed_origins=check_origin,
     ping_interval=10,
     ping_timeout=20,
 )
+
 port_used = 5000
-AUTH_ROOM = 'authenticated'
 
 # Generate a token and password on server launch
 JWT_SECRET = secrets.token_hex(32)
+AUTH_ROOM = "".join(secrets.choice(string.ascii_letters + string.digits) for _ in range(32))
 SESSION_PASSWORD = "".join(secrets.choice(string.ascii_letters + string.digits) for _ in range(6))
 
 # Track authenticated socket IDs and user names in server memory
@@ -29,7 +41,7 @@ authenticated_clients = {}  # { request.sid: user_name }
 # In-memory storage for pins and visibility state
 pins = []
 pins_visible = True
-one_pin_limit = False  # New global setting for 1-pin limit
+one_pin_limit = False
 
 # Timer state
 timer_data = {
@@ -50,6 +62,49 @@ def get_local_ip():
         return "127.0.0.1"
 
 local_ip = get_local_ip()
+#----------SERVER SETUP END----------
+
+def send_successful_connection_response(token, name):
+    emit('auth_result', {'success': True, 'token': token, 'name': name})
+    emit('load_pins', {'pins': pins, 'visible': pins_visible, 'one_pin_limit': one_pin_limit})
+    emit('timer_update', get_current_timer_state())
+
+@socketio.on('authenticate')
+def handle_authenticate(data):
+    password = data.get('password')
+    name = str(escape(data.get('name', '').strip()))
+
+    if password == SESSION_PASSWORD and name:
+        authenticated_clients[request.sid] = name
+        token = jwt.encode({
+            'user_name': name,
+            'exp': datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=1)
+        }, JWT_SECRET, algorithm="HS256")
+        join_room(AUTH_ROOM)
+        send_successful_connection_response(token, name)
+    else:
+        emit('auth_result', {'success': False, 'message': 'Invalid room password or name.'})
+
+@socketio.on('connect')
+def handle_connect(auth=None):
+    if not auth or not isinstance(auth, dict):
+        return True  # Allow initial unauthenticated connection
+        
+    token = auth.get('token')
+    if not token:
+        return True  # Allow connection without token so user can authenticate via password
+        
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
+        user_name = payload.get('user_name')
+        if user_name:
+            authenticated_clients[request.sid] = user_name
+            join_room(AUTH_ROOM)
+            send_successful_connection_response(token, user_name)
+            return True
+        return False  # Reject if token payload lacks user_name
+    except (jwt.ExpiredSignatureError, jwt.InvalidTokenError):
+        return False  # Reject expired or tampered tokens
 
 def get_current_timer_state():
     if timer_data['running'] and timer_data['end_time']:
@@ -70,56 +125,9 @@ def index():
     is_host = request.remote_addr in ('127.0.0.1', '::1', local_ip)
     return render_template('index.html', is_host=is_host)
 
-@socketio.on('connect')
-def handle_connect(auth=None):
-    # Safely retrieve token sent during Socket.IO handshake
-    token = auth.get('token') if isinstance(auth, dict) else None
-    
-    if token:
-        try:
-            payload = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
-            user_name = payload.get('user_name')
-            if user_name:
-                session['user_name'] = user_name
-                authenticated_clients[request.sid] = user_name
-                
-                # Notify client that existing token was accepted
-                emit('auth_result', {'success': True, 'token': token, 'name': user_name})
-                emit('load_pins', {
-                    'pins': pins, 
-                    'visible': pins_visible, 
-                    'one_pin_limit': one_pin_limit
-                })
-                emit('timer_update', get_current_timer_state())
-        except (jwt.ExpiredSignatureError, jwt.InvalidTokenError):
-            pass
-
 @socketio.on('disconnect')
 def handle_disconnect():
     authenticated_clients.pop(request.sid, None)
-
-@socketio.on('authenticate')
-def handle_authenticate(data):
-    password = data.get('password')
-    name = data.get('name')
-
-    if password == SESSION_PASSWORD and name:
-        authenticated_clients[request.sid] = name
-
-        token = jwt.encode({
-            'user_name': name,
-            'exp': datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=1)
-        }, JWT_SECRET, algorithm="HS256")
-
-        emit('auth_result', {'success': True, 'token': token, 'name': name})
-        emit('load_pins', {
-            'pins': pins, 
-            'visible': pins_visible, 
-            'one_pin_limit': one_pin_limit
-        })
-        emit('timer_update', get_current_timer_state())
-    else:
-        emit('auth_result', {'success': False, 'message': 'Invalid room password or name.'})
 
 @socketio.on('add_pin')
 def handle_add_pin(data):
@@ -170,9 +178,9 @@ def handle_delete_pin(data):
     
     global pins
     pin_id = data.get('id')
+    client_id = data.get('clientId')
     pin_to_delete = next((p for p in pins if p.get('id') == pin_id), None)
-
-    if pin_to_delete and pin_to_delete.get('owner_sid') == request.sid:
+    if pin_to_delete and pin_to_delete.get('clientId') == client_id:
         pins = [p for p in pins if p.get('id') != pin_id]
         emit('pin_deleted', {'id': pin_id}, to=AUTH_ROOM)
 
