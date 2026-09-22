@@ -1,6 +1,4 @@
-<p align="center" style="font-size: 48px; font-weight: bold; color: #9E1B32;">
-  BamaGuesser
-</p>
+# BamaGuesser
 
 ## Introduction
 
