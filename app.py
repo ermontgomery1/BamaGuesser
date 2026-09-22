@@ -88,11 +88,11 @@ def handle_authenticate(data):
 @socketio.on('connect')
 def handle_connect(auth=None):
     if not auth or not isinstance(auth, dict):
-        return True  # Allow initial unauthenticated connection
+        return True
         
     token = auth.get('token')
     if not token:
-        return True  # Allow connection without token so user can authenticate via password
+        return True
         
     try:
         payload = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
