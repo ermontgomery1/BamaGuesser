@@ -21,13 +21,15 @@
         </div>
     </div>
 
-    {% if is_host %}
     <div class="host-controls">
+        <button id="toggle-lock-pins-txt">Pins: UNLOCKED</button>
+        {% if is_host %}
+        <button id="toggle-lock-pins-btn" onclick="toggleLockPins()">Lock Pins</button>
         <button id="toggle-btn" onclick="togglePins()">Pins: SHOWN</button>
         <button id="limit-btn" onclick="toggleOnePinLimit()">1 Pin Limit: OFF</button>
         <button id="delete-all-pins-btn" onclick="deleteAllPins()">Delete All Pins</button>
+        {% endif %}
     </div>
-    {% endif %}
 
     <!-- Timer Widget (Bottom Right on Desktop / Bottom Center on Mobile) -->
     <div class="timer-panel">
