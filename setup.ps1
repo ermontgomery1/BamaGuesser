@@ -8,7 +8,7 @@ if (Test-Path $VenvPath) {
 }
 else {
     Write-Host "Creating Python virtual environment..."
-    python3 -m venv $VenvPath
+    python -m venv $VenvPath
 }
 
 # Install dependencies into the virtual environment
@@ -27,4 +27,4 @@ Write-Host "To exit the environment when finished, run:"
 Write-Host "deactivate"
 Write-Host ""
 Write-Host "To start the program, run:"
-Write-Host "python3 app.py"
+Write-Host "python app.py"

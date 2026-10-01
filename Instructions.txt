@@ -1,0 +1,24 @@
+PREREQUISITE INSTALLS:
+Install git: https://git-scm.com/install/windows
+
+Install Python: https://www.python.org/downloads/
+
+
+REPOSITORY LINK:
+Repository: https://github.com/ermontgomery1/BamaGuesser.git
+
+
+GOOD COMMANDS TO KNOW IN POWERSHELL:
+- Examine Files in Current Directory/Folder: ls OR dir
+- Move into a directory/folder: cd DIRECTORY_NAME_HERE
+- Move one directory/folder out of the current directory/folder: cd ..
+- To clear the terminal: clear OR cls
+
+
+INSTRUCTIONS:
+- Clone the repository: git clone https://github.com/ermontgomery1/BamaGuesser.git
+- Enter the repository: cd BamaGuesser
+- Setup Python Virtual Environment: ./setup.ps1
+- Start Program: python app.py
+- End Program: CTRL + C
+- Exit Python Virtual Environment: deativate

@@ -30,33 +30,23 @@ BamaGuesser is an interactive map made for real-time pin sharing between users b
 ```
 
 ## Installation & Setup
+### PREREQUISITE INSTALLS:
+- Install git: https://git-scm.com/install/windows
+- Install Python: https://www.python.org/downloads/
 
-### Prerequisites
+### REPOSITORY LINK:
+Repository: https://github.com/ermontgomery1/BamaGuesser.git
 
-* Python 3.8 or higher
-* `pip` (Python package installer)
+### GOOD COMMANDS TO KNOW IN POWERSHELL:
+- Examine Files in Current Directory/Folder: ls OR dir
+- Move into a directory/folder: cd DIRECTORY_NAME_HERE
+- Move one directory/folder out of the current directory/folder: cd ..
+- To clear the terminal: clear OR cls
 
-### Step 1: Clone or Copy the Repository
-
-Ensure files are organized according to Flask's standard directory structure:
-
-```bash
-mkdir -p static templates
-# Move index.css to static/
-# Move index.html to templates/
-```
-
-### Step 2: Install Dependencies
-
-Install the required Python packages:
-
-```bash
-pip install flask flask-socketio
-```
-
-*Note: Depending on your deployment environment, you may also want to install an asynchronous server library such as `gevent-websocket` or `eventlet`.*
-
-```bash
-pip install gevent-websocket
-
-```
+### INSTRUCTIONS:
+- Clone the repository: git clone https://github.com/ermontgomery1/BamaGuesser.git
+- Enter the repository: cd BamaGuesser
+- Setup Python Virtual Environment: ./setup.ps1
+- Start Program: python app.py
+- End Program: CTRL + C
+- Exit Python Virtual Environment: deativate
