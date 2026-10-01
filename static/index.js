@@ -166,6 +166,9 @@ socket.on('load_pins', (data) => {
     if (data.one_pin_limit !== undefined) {
         updateLimitBtnUI(data.one_pin_limit);
     }
+    if (data.lock_pins !== undefined) {
+        updateLockPinsUI(data.lock_pins);
+    }
     data.pins.forEach(addMarkerToMap);
     updatePinsVisibility(data.visible);
 });
@@ -275,9 +278,24 @@ function togglePins() {
     socket.emit('toggle_pins');
 }
 
+function toggleLockPins() {
+    socket.emit('toggle_lock_pins');
+}
+
 function deleteAllPins() {
     socket.emit('delete_all_pins');
 }
+
+function updateLockPinsUI(isLocked) {
+    const toggleLockBtn = document.getElementById('toggle-lock-pins-txt');
+    if (toggleLockBtn) {
+        toggleLockBtn.innerText = isLocked ? "Pins: LOCKED" : "Pins: UNLOCKED";
+    }
+}
+
+socket.on('toggle_lock_pins', (data) =>{
+    updateLockPinsUI(data.lock_pins);
+});
 
 socket.on('pin_deleted', (data) => {
     if (activeMarkers[data.id]) {

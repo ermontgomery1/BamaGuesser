@@ -8,11 +8,16 @@ import secrets
 import jwt
 import datetime
 import re
+import logging
 from markupsafe import escape
 
 #----------SERVER SETUP BEGIN----------
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'map_secret_key'
+
+# Silence Werkzeug HTTP request logs <--- Added
+log = logging.getLogger('werkzeug')
+log.setLevel(logging.ERROR)
 
 # Restrict CORS origins to trusted domains or local network patterns
 def check_origin(origin):
@@ -24,8 +29,10 @@ def check_origin(origin):
 socketio = SocketIO(
     app,
     cors_allowed_origins=check_origin,
-    ping_interval=10,
-    ping_timeout=20,
+    ping_interval=25,
+    ping_timeout=60,
+    logger=False,          # Disable Socket.IO logs
+    engineio_logger=False  # Disable Engine.IO logs
 )
 
 port_used = 5000
@@ -33,7 +40,7 @@ port_used = 5000
 # Generate a token and password on server launch
 JWT_SECRET = secrets.token_hex(32)
 AUTH_ROOM = "".join(secrets.choice(string.ascii_letters + string.digits) for _ in range(32))
-SESSION_PASSWORD = "".join(secrets.choice(string.ascii_letters + string.digits) for _ in range(6))
+SESSION_PASSWORD = "".join(secrets.choice(string.digits) for _ in range(4))
 
 # Track authenticated socket IDs and user names in server memory
 authenticated_clients = {}  # { request.sid: user_name }
@@ -42,6 +49,7 @@ authenticated_clients = {}  # { request.sid: user_name }
 pins = []
 pins_visible = True
 one_pin_limit = False
+lock_pins = False
 
 # Timer state
 timer_data = {
@@ -66,7 +74,7 @@ local_ip = get_local_ip()
 
 def send_successful_connection_response(token, name):
     emit('auth_result', {'success': True, 'token': token, 'name': name})
-    emit('load_pins', {'pins': pins, 'visible': pins_visible, 'one_pin_limit': one_pin_limit})
+    emit('load_pins', {'pins': pins, 'visible': pins_visible, 'one_pin_limit': one_pin_limit, 'lock_pins': lock_pins})
     emit('timer_update', get_current_timer_state())
 
 @socketio.on('authenticate')
@@ -131,6 +139,8 @@ def handle_disconnect():
 
 @socketio.on('add_pin')
 def handle_add_pin(data):
+    if lock_pins:
+        return
     if request.sid not in authenticated_clients:
         return
     
@@ -173,6 +183,8 @@ def handle_toggle_one_pin_limit():
 
 @socketio.on('delete_pin')
 def handle_delete_pin(data):
+    if lock_pins:
+        return
     if request.sid not in authenticated_clients:
         return
     
@@ -195,12 +207,24 @@ def handle_toggle_pins():
 
 @socketio.on('delete_all_pins')
 def handle_delete_all_pins():
+    if lock_pins:
+        return
     if request.sid not in authenticated_clients:
         return
     if request.remote_addr not in ('127.0.0.1', '::1', local_ip):
         return
     pins.clear()
     emit('delete_all_pins', {'pins': pins, 'visible': pins_visible}, to=AUTH_ROOM)
+
+@socketio.on('toggle_lock_pins')
+def handle_lock_pins():
+    if request.sid not in authenticated_clients:
+        return
+    if request.remote_addr not in ('127.0.0.1', '::1', local_ip):
+        return
+    global lock_pins
+    lock_pins = not lock_pins
+    emit('toggle_lock_pins', {'lock_pins': lock_pins}, to=AUTH_ROOM)
 
 @socketio.on('control_timer')
 def handle_control_timer(data):
@@ -256,4 +280,4 @@ def print_link():
 
 if __name__ == '__main__':
     print_link()
-    socketio.run(app, host='0.0.0.0', port=port_used)
+    socketio.run(app, host='0.0.0.0', port=port_used, log_output=False)
