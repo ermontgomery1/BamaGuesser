@@ -47,6 +47,7 @@ Repository: https://github.com/ermontgomery1/BamaGuesser.git
 - Clone the repository: git clone https://github.com/ermontgomery1/BamaGuesser.git
 - Enter the repository: cd BamaGuesser
 - Setup Python Virtual Environment: ./setup.ps1
+- Enter Python Virtual Environment: .\.venv\Scripts\Activate.ps1
 - Start Program: python app.py
 - End Program: CTRL + C
-- Exit Python Virtual Environment: deativate
+- Exit Python Virtual Environment: deactivate
